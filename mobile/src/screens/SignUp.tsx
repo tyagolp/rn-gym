@@ -4,6 +4,7 @@ import {
   Image,
   ScrollView,
   Text,
+  useToast,
   VStack,
 } from "@gluestack-ui/themed";
 
@@ -16,6 +17,11 @@ import { AuthNavigatorRouterProps } from "@routes/auth.routes";
 import { Controller, useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { api } from "@services/api";
+import { AppError } from "../utils/AppError";
+import { ToastMessage } from "@components/ToastMessage";
+import { useAuth } from "@hooks/useAuth";
+import { useState } from "react";
 
 const signUpSchema = z
   .object({
@@ -26,14 +32,19 @@ const signUpSchema = z
       .min(6, "A senha deve ter pelo menos 6 dígitos."),
     password_confirm: z.string({ message: "Confirme a senha." }),
   })
-  .refine((x) => {
-    if (x.password !== x.password_confirm) return false;
-  }, `A confirmação da senha não confere`);
+  .refine((x) => x.password === x.password_confirm, {
+    message: `A confirmação da senha não confere`,
+    path: ["password_confirm"],
+  });
 
 type FormDataProps = z.infer<typeof signUpSchema>;
 
 export function SignUp() {
+  const [isLoading, setIsLoading] = useState(false);
   const navigation = useNavigation<AuthNavigatorRouterProps>();
+
+  const toast = useToast();
+  const { singIn } = useAuth();
 
   const {
     control,
@@ -46,8 +57,33 @@ export function SignUp() {
   function handleGoBack() {
     navigation.goBack();
   }
-  function handleSignUp(data: FormDataProps) {
-    console.log({ data });
+  async function handleSignUp({ name, email, password }: FormDataProps) {
+    try {
+      setIsLoading(true);
+
+      const response = await api.post("/users", { name, email, password });
+      await singIn(email, password);
+    } catch (error) {
+      const isAppError = error instanceof AppError;
+
+      const title = isAppError
+        ? error.message
+        : "Não foi possível criar a conta. Tente novamente mais tarde";
+
+      toast.show({
+        placement: "top",
+        render: ({ id }) => (
+          <ToastMessage
+            id={id}
+            action="error"
+            title={title}
+            onClose={() => toast.close(id)}
+          />
+        ),
+      });
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   return (
@@ -136,6 +172,7 @@ export function SignUp() {
             <Button
               title="Criar e acessar"
               onPress={handleSubmit(handleSignUp)}
+              isLoading={isLoading}
             />
           </Center>
           <Button
