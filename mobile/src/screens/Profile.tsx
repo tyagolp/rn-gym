@@ -9,11 +9,51 @@ import * as ImagePicker from "expo-image-picker";
 import * as FileSystem from "expo-file-system";
 import { useState } from "react";
 import { ToastMessage } from "@components/ToastMessage";
+import { useAuth } from "@hooks/useAuth";
+import { z } from "zod";
+import { Controller, useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { api } from "@services/api";
+import { AppError } from "@utils/AppError";
+
+import defaulUserPhotoImg from "@assets/userPhotoDefault.png";
+
+const formSchema = z
+  .object({
+    name: z.string({
+      message: "Informe o nome",
+    }),
+    email: z.string().email(),
+    password: z
+      .string({ message: "Informe a senha" })
+      .min(6, "A senha deve ter pelo menos 6 dígitos."),
+    old_password: z.string({ message: "Informe a senha atual" }),
+    confirm_password: z.string({ message: "Confirme a senha." }),
+  })
+  .refine((x) => x.password === x.confirm_password, {
+    message: `A confirmação da senha não confere`,
+    path: ["confirm_password"],
+  });
+
+type FormDataProps = z.infer<typeof formSchema>;
 
 export function Profile() {
-  const [userPhoto, setUserPhoto] = useState("https://github.com/tyagolp.png");
+  const [isUpdating, setIsUpdating] = useState(false);
 
   const toast = useToast();
+  const { user, updateUserProfile } = useAuth();
+
+  const {
+    control,
+    handleSubmit,
+    formState: { errors },
+  } = useForm<FormDataProps>({
+    defaultValues: {
+      name: user.name,
+      email: user.email,
+    },
+    resolver: zodResolver(formSchema),
+  });
 
   async function handleUserPhotoSelect() {
     try {
@@ -29,8 +69,9 @@ export function Profile() {
       }
 
       const photoUri = photoSelected.assets[0].uri;
+      const photoType = photoSelected.assets[0].type;
 
-      if (photoUri) {
+      if (photoUri && photoType) {
         const photoInfo = (await FileSystem.getInfoAsync(photoUri)) as {
           size: number;
         };
@@ -49,10 +90,85 @@ export function Profile() {
             ),
           });
         }
-        setUserPhoto(photoUri);
+
+        const fileExtension = photoUri.split(".").pop();
+        const photoFile = {
+          name: `${user.name}.${fileExtension}`.toLowerCase(),
+          uri: photoUri,
+          type: `${photoType}/${fileExtension}`,
+        } as any;
+
+        const userPhotoUploadForm = new FormData();
+        userPhotoUploadForm.append("avatar", photoFile);
+        const avatarUpdtedResponse = await api.patch(
+          "/users/avatar",
+          userPhotoUploadForm,
+          {
+            headers: {
+              "Content-Type": "multipart/form-data",
+            },
+          }
+        );
+
+        const userUpdated = user;
+        userUpdated.avatar = avatarUpdtedResponse.data.avatar;
+        await updateUserProfile(userUpdated);
+
+        toast.show({
+          placement: "top",
+          render: ({ id }) => (
+            <ToastMessage
+              id={id}
+              action="success"
+              title="Foto atualizada!"
+              onClose={() => toast.close(id)}
+            />
+          ),
+        });
       }
     } catch (error) {
       console.error(error);
+    }
+  }
+
+  async function handleProfileUpdate(data: FormDataProps) {
+    try {
+      setIsUpdating(true);
+      const userUpdated = user;
+      userUpdated.name = data.name;
+
+      await api.put("/users", data);
+
+      await updateUserProfile(userUpdated);
+      toast.show({
+        placement: "top",
+        render: ({ id }) => (
+          <ToastMessage
+            id={id}
+            action="success"
+            title="Perfil atualizado com sucesso!"
+            onClose={() => toast.close(id)}
+          />
+        ),
+      });
+    } catch (error) {
+      const isAppError = error instanceof AppError;
+      const title = isAppError
+        ? error.message
+        : "Não foi possível atualizar os dados. Tente novamente mais tarde.";
+      toast.show({
+        placement: "top",
+        render: ({ id }) => (
+          <ToastMessage
+            id={id}
+            action="error"
+            title={title}
+            onClose={() => toast.close(id)}
+          />
+        ),
+      });
+    } finally {
+      setIsUpdating(false);
     }
   }
 
@@ -63,7 +179,11 @@ export function Profile() {
       <ScrollView contentContainerStyle={{ paddingBottom: 36 }}>
         <Center mt="$6" px="$10">
           <UserPhoto
-            source={{ uri: userPhoto }}
+            source={
+              user.avatar
+                ? { uri: `${api.defaults.baseURL}/avatar/${user.avatar}` }
+                : defaulUserPhotoImg
+            }
             size="xl"
             alt="Imagem do usuário"
           />
@@ -80,8 +200,32 @@ export function Profile() {
             </Text>
           </TouchableOpacity>
           <Center w="$full" gap="$4">
-            <Input placeholder="Nome" bg="$gray600" color="$gray300" />
-            <Input value="tiago@email.com" bg="$gray600" isReadOnly={true} />
+            <Controller
+              control={control}
+              name="name"
+              render={({ field: { value, onChange } }) => (
+                <Input
+                  bg="$gray600"
+                  placeholder="Nome"
+                  onChangeText={onChange}
+                  value={value}
+                  errorMessage={errors.name?.message}
+                />
+              )}
+            />
+            <Controller
+              control={control}
+              name="email"
+              render={({ field: { value, onChange } }) => (
+                <Input
+                  bg="$gray600"
+                  placeholder="E-mail"
+                  isReadOnly
+                  onChangeText={onChange}
+                  value={value}
+                />
+              )}
+            />
           </Center>
 
           <Heading
@@ -96,14 +240,51 @@ export function Profile() {
           </Heading>
 
           <Center w="$full" gap="$4">
-            <Input value="Senha antiga" bg="$gray600" secureTextEntry />
-            <Input value="Nova senha" bg="$gray600" secureTextEntry />
-            <Input
-              value="Confirme a nova senha"
-              bg="$gray600"
-              secureTextEntry
+            <Controller
+              control={control}
+              name="old_password"
+              render={({ field: { onChange } }) => (
+                <Input
+                  bg="$gray600"
+                  placeholder="Senha antiga"
+                  secureTextEntry
+                  onChangeText={onChange}
+                  errorMessage={errors.old_password?.message}
+                />
+              )}
             />
-            <Button title="Atualizar" />
+            <Controller
+              control={control}
+              name="password"
+              render={({ field: { onChange } }) => (
+                <Input
+                  bg="$gray600"
+                  placeholder="Nova senha"
+                  secureTextEntry
+                  onChangeText={onChange}
+                  errorMessage={errors.password?.message}
+                />
+              )}
+            />
+            <Controller
+              control={control}
+              name="confirm_password"
+              render={({ field: { onChange } }) => (
+                <Input
+                  bg="$gray600"
+                  placeholder="Confirme a nova senha"
+                  secureTextEntry
+                  onChangeText={onChange}
+                  errorMessage={errors.confirm_password?.message}
+                />
+              )}
+            />
+            <Button
+              title="Atualizar"
+              mt={4}
+              onPress={handleSubmit(handleProfileUpdate)}
+              isLoading={isUpdating}
+            />
           </Center>
         </Center>
       </ScrollView>
